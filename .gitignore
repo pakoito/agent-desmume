@@ -1,0 +1,27 @@
+# Python venv
+.venv/
+venv/
+
+# Build / install artifacts
+*.egg-info/
+src/*.egg-info/
+build/
+dist/
+*.pyc
+__pycache__/
+
+# Test outputs
+/tmp/agent-desmume-test/
+*.png
+*.dsv
+*.sav
+*.dst
+*.dsm
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store

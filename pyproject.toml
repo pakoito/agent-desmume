@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-desmume"
+version = "0.0.1"
+description = "Headless DeSmuME daemon + CLI for agent-driven Nintendo DS ROM testing"
+license = "GPL-3.0-or-later"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "py-desmume>=0.0.9",
+]
+
+[project.scripts]
+agent-desmume = "agent_desmume.cli:main"
+agent-desmume-daemon = "agent_desmume.daemon:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
