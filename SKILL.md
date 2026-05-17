@@ -18,13 +18,18 @@ A persistent-daemon CLI that wraps DeSmuME (via `py-desmume`) so an agent can dr
 
 ## Installation
 
+`pip install` compiles a patched DeSmuME 0.9.13 `libdesmume.so` from source (the PyPI py-desmume 0.0.9 wheel ships 0.9.12 without zlib support, which can't load compressed `.dst` files made by the standalone GUI). First install takes ~9 minutes.
+
 ```bash
+# Build deps for DeSmuME (Debian / Ubuntu):
+sudo apt install -y meson ninja-build pkg-config libsdl2-dev libpcap-dev \
+  libglib2.0-dev zlib1g-dev libopenal-dev libsoundtouch-dev libagg-dev \
+  python3-dev libgl1
+
 git clone https://github.com/pakoito/agent-desmume.git
 cd agent-desmume
 python3 -m venv .venv
 .venv/bin/pip install -e .
-# One system dep (Debian/Ubuntu); harmless if already installed:
-sudo apt install -y libgl1
 ```
 
 The two binaries land in `.venv/bin/`. Put them on PATH once:
@@ -149,8 +154,8 @@ agent-desmume watch clear-all
 ```
 
 ### State persistence
-- `agent-desmume state save SLOT` / `agent-desmume state load SLOT` — 10 numbered slots (0–9). Ephemeral, in-memory.
-- `agent-desmume state save-file PATH` / `agent-desmume state load-file PATH` — savestate to a real file. Persists across daemon restarts.
+- `agent-desmume state save SLOT` / `agent-desmume state load SLOT` — 10 numbered slots (0–9). Ephemeral, in-memory. Loading a slot that's never been written to fails with `inspection.exists: false`.
+- `agent-desmume state save-file PATH` / `agent-desmume state load-file PATH` — savestate to a real file. Persists across daemon restarts. Loads both **compressed** and uncompressed `.dst` files produced by DeSmuME 0.9.13 (the GUI emulator always writes compressed).
 
 ### Battery save (.sav / .dsv)
 The on-cartridge backup memory the game actually writes to. If your save is `game.dsv` or `game.sav` sitting next to `game.nds`, **plain `boot` already picks it up** (see the ROM control section). The verbs below are for the cases where the save is somewhere else or has a different name.
@@ -183,6 +188,30 @@ Example batch input:
   {"verb": "screenshot", "args": {"path": "/tmp/after.png", "screen": "bottom"}}
 ]
 ```
+
+## Rich error responses
+
+When a file-touching verb (`boot`, `state save-file`, `state load-file`, `backup import`, `movie record`, `movie play`, `state save`/`load` for slots) fails, the JSON error payload includes two extra fields:
+
+```json
+{
+  "ok": false,
+  "error": "RichError: Unable to load savesate.",
+  "hint": "savestate was created by DeSmuME 9.13.0 (raw=91300) but the daemon is running DeSmuME 9.12.0 …",
+  "inspection": {
+    "path": "/abs/path.dst",
+    "signature_ok": true,
+    "format_version": 12,
+    "creator_desmume": "9.13.0 (raw=91300)",
+    "compressed": true,
+    "zlib_ok": true
+  }
+}
+```
+
+py-desmume's underlying C library routes its real error messages through a no-op `msgBoxFake` callback, so the daemon pre-inspects the input file (NDS header, .dst signature/version/zlib stream, .dsv `|-DESMUME SAVE-|` trailer, output-path writability) and attaches what it found. The `hint` is a one-line plain-English diagnosis derived from the inspection; the `inspection` dict has the raw data your code can branch on.
+
+Treat `inspection` as informational, not contractual — fields are added or refined as new failure modes show up.
 
 ## NDS memory map cheat sheet
 
@@ -323,11 +352,12 @@ agent-desmume --session b step 600; agent-desmume --session b screenshot b.png
 
 ## Limitations
 
-- **Microphone**: not exposed. Mic-required scenes ("blow into the mic" puzzles) cannot be passed. Adding it requires patching `py-desmume`'s vendored DeSmuME and rebuilding the wheel.
+- **Microphone**: not exposed. Mic-required scenes ("blow into the mic" puzzles) cannot be passed. Adding it would mean a fourth patch in [`pakoito/desmume`](https://github.com/pakoito/desmume/tree/0.9.13-agent-desmume) exposing `desmume_input_mic_*` symbols, plus matching ctypes glue in the py-desmume fork.
 - **Real-time / 60fps playback**: not built in. Each `step` is synchronous frame stepping — fine for agent control, not for a human watching. Build a separate viewer if you need that.
 - **Jump-to-PC** (`regs write … pc=0x…`): writing PC is a no-op when DeSmuME's JIT is enabled. JIT is on by default; there is no daemon flag to disable it yet. Reading PC always works.
 - **Hit cap**: breakpoint/watchpoint hits are capped at 32 records per drain to keep responses small in tight loops; the `hit_cap_reached` flag tells you when extras were dropped.
 - **`backup export`** silently returns `exported: false` if the game hasn't yet initialized save data (you need to play through at least one save point first).
+- **DeSmuME version coupling**: savestates (`.dst`) are pinned to the exact minor version that wrote them. The daemon targets 0.9.13 — saves from 0.9.12 or future 0.9.14 will fail with a `RichError` whose `inspection.creator_desmume` reveals the mismatch.
 
 ## Discovery
 
@@ -338,8 +368,8 @@ agent-desmume --json info
 
 ## Project layout (for maintenance)
 
-- `src/agent_desmume/daemon.py` — Unix-socket JSON server wrapping `py-desmume`.
+- `src/agent_desmume/daemon.py` — Unix-socket JSON server wrapping `py-desmume`. Holds the `RichError` class and per-format inspection helpers (`_inspect_rom_file`, `_inspect_savestate_file`, `_inspect_battery_file`, `_inspect_movie_file`, `_inspect_output_path`).
 - `src/agent_desmume/cli.py` — CLI client; auto-spawns the daemon on first call.
-- `pyproject.toml` — declares `agent-desmume` and `agent-desmume-daemon` entry points (installed via `pip install -e .` into `.venv`).
+- `pyproject.toml` — entry points + the git+url py-desmume dependency. Points at `pakoito/py-desmume@0.9.13-agent-desmume`, which pins `desmume_src` to `pakoito/desmume@0.9.13-agent-desmume` (upstream 0.9.13 + `-DHAVE_LIBZ` + `-D_GNU_SOURCE` + the three `desmume_close`/backup interface exports).
 - `SKILL.md` — this file. Symlink it into `~/.claude/skills/agent-desmume/` to register with Claude Code.
 - State per session lives under `$XDG_RUNTIME_DIR/agent-desmume/<session>/` (or `~/.cache/agent-desmume/<session>/`): socket + pid + daemon.log.

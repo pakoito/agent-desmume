@@ -1,19 +1,23 @@
 # agent-desmume
 
-**Headless DeSmuME for agents.** A persistent-daemon CLI that drives a Nintendo DS emulator over a Unix socket: boot a ROM, step frames, take screenshots, press buttons, touch the screen, save/load states, read and poke main RAM, set breakpoints and watchpoints. Built on top of [py-desmume](https://github.com/SkyTemple/py-desmume).
+**Headless DeSmuME for agents.** A persistent-daemon CLI that drives a Nintendo DS emulator over a Unix socket: boot a ROM, step frames, take screenshots, press buttons, touch the screen, save/load states, read and poke main RAM, set breakpoints and watchpoints. Built on top of a [fork of py-desmume](https://github.com/pakoito/py-desmume/tree/0.9.13-agent-desmume) pinned to DeSmuME 0.9.13 with compressed savestates enabled.
 
 Designed for testing fan translations, automating menu navigation, and giving LLM agents a programmatic handle on a DS game without a window manager in sight.
 
 ## Install
 
+`pip install` will git-clone the py-desmume fork and its DeSmuME submodule, then run `meson + ninja` to build `libdesmume.so` from source. **First install takes ~9 min** on a single core; subsequent installs reuse the wheel cache.
+
 ```bash
+# Build deps for DeSmuME (Debian / Ubuntu):
+sudo apt install -y meson ninja-build pkg-config libsdl2-dev libpcap-dev \
+  libglib2.0-dev zlib1g-dev libopenal-dev libsoundtouch-dev libagg-dev \
+  python3-dev libgl1
+
 git clone https://github.com/pakoito/agent-desmume.git
 cd agent-desmume
 python3 -m venv .venv
 .venv/bin/pip install -e .
-
-# One system dependency on Debian / Ubuntu (skipped if already installed):
-sudo apt install -y libgl1
 ```
 
 Put the binaries on `$PATH` (typically `~/.local/bin` is already there):
@@ -74,13 +78,21 @@ See `SKILL.md` for the full list.
 ## Architecture
 
 ```
-agent-desmume CLI  ──── Unix socket / newline-delimited JSON ───>  agent-desmume-daemon (Python)
-                                                                          │
-                                                                          └── py-desmume  (Cython)
-                                                                                 └── libdesmume.so  (bundled in py-desmume wheel)
+agent-desmume CLI ─── Unix socket / NDJSON ──> agent-desmume-daemon (Python)
+                                                       │
+                                                       └── py-desmume (Cython)        ← pakoito/py-desmume fork
+                                                              └── libdesmume.so       ← built locally from pakoito/desmume
 ```
 
-No vendoring, no submodules. The daemon imports `py-desmume`; the wheel ships its own `libdesmume.so`.
+The dependency chain is two patched forks pinned by `pyproject.toml`:
+
+- [`pakoito/py-desmume@0.9.13-agent-desmume`](https://github.com/pakoito/py-desmume/tree/0.9.13-agent-desmume) — SkyTemple's bindings with the desmume submodule bumped to upstream `release_0_9_13` plus the three patches below.
+- [`pakoito/desmume@0.9.13-agent-desmume`](https://github.com/pakoito/desmume/tree/0.9.13-agent-desmume) — upstream DeSmuME 0.9.13 with:
+  - `-D_GNU_SOURCE` in the interface meson build (fixes `strdup`/`realpath` against modern glibc).
+  - `-DHAVE_LIBZ` in the interface meson build (turns on the zlib-compressed savestate read/write paths — without it, every `.dst` produced by the standalone 0.9.13 GUI fails to load).
+  - Three extra C exports cherry-picked from SkyTemple's downstream: `desmume_close`, `desmume_backup_import_file`, `desmume_backup_export_file` (needed by py-desmume's Python wrapper).
+
+The published py-desmume 0.0.9 wheel on PyPI ships DeSmuME 0.9.12 without `HAVE_LIBZ`, so this project does **not** install cleanly from PyPI alone.
 
 ## License
 
@@ -91,4 +103,4 @@ See `LICENSE`.
 ## Credits
 
 - [DeSmuME](https://github.com/TASEmulators/desmume) — the emulator itself.
-- [py-desmume](https://github.com/SkyTemple/py-desmume) — the Python bindings that make this possible. Maintained by the SkyTemple project.
+- [py-desmume](https://github.com/SkyTemple/py-desmume) — the Python bindings that make this possible, maintained by the SkyTemple project. agent-desmume pulls from a [local fork](https://github.com/pakoito/py-desmume) with the 0.9.13 submodule bump.
