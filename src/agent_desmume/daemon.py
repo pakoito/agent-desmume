@@ -61,9 +61,11 @@ class RichError(RuntimeError):
         self.inspection = inspection or {}
 
 
-# py-desmume 0.0.9 vendors DeSmuME 0.9.12. Its savestate magic is the version
-# encoded as MAJOR*10000 + MINOR*100 + PATCH, i.e. 91200.
-DAEMON_DESMUME_MAGIC = 91200
+# The vendored libdesmume's savestate magic is the DeSmuME version encoded as
+# MAJOR*10000 + MINOR*100 + PATCH, e.g. 91200 for 0.9.12, 91300 for 0.9.13.
+# Bumped to 91300 after locally rebuilding py-desmume against upstream's
+# release_0_9_13 tag (with HAVE_LIBZ enabled for compressed savestates).
+DAEMON_DESMUME_MAGIC = 91300
 SAVESTATE_FORMAT_VERSION = 12
 SAVESTATE_SIG = b"DeSmuME SState\x00\x00"
 
