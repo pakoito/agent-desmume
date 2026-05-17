@@ -494,6 +494,20 @@ class Daemon:
         self.socket_path = socket_path
         self.emu = DeSmuME()
         self.emu.volume_set(0)
+        # Mute alone leaves the SDL audio thread and the SPU mixer running,
+        # which still costs a measurable chunk of frame time. Swap the SPU's
+        # output backend to the no-op "dummy" core (coreid 0 in DeSmuME's
+        # SNDCoreList). py-desmume doesn't expose this — call the mangled
+        # libdesmume symbol directly. Best-effort: skip silently on builds
+        # that didn't export it.
+        try:
+            import ctypes
+            _spu_change = self.emu.lib._Z19SPU_ChangeSoundCoreii
+            _spu_change.argtypes = [ctypes.c_int, ctypes.c_int]
+            _spu_change.restype = ctypes.c_int
+            _spu_change(0, 0)  # SNDCORE_DUMMY, buffersize=0
+        except (AttributeError, OSError):
+            pass
         self.rom: str | None = None
         self.frame_count = 0
         self.lock = asyncio.Lock()  # serialize emulator access
