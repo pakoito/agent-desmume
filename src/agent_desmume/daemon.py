@@ -72,7 +72,7 @@ def _add_ruler_overlay(img, screen: str, touch_pos: tuple[int, int] | None = Non
     BOUNDARY = (220, 50, 50)
     MAGENTA = (255, 0, 255)
     WHITE = (255, 255, 255)
-    DOT_R = 4
+    DOT_R = 2
 
     iw, ih = img.size
     canvas = Image.new("RGB", (iw + LEFT, ih + BOTTOM), (255, 255, 255))
