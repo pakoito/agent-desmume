@@ -47,7 +47,7 @@ REG_NAMES = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
 REG_ALIASES = {"sp": "r13", "lr": "r14", "pc": "r15"}
 
 
-def _add_ruler_overlay(img, screen: str):
+def _add_ruler_overlay(img, screen: str, touch_pos: tuple[int, int] | None = None):
     """Pad the screenshot with bottom + left rulers labelled in TOUCH coords.
 
     The Nintendo DS touch screen is the bottom screen only, with origin (0,0)
@@ -70,6 +70,9 @@ def _add_ruler_overlay(img, screen: str):
     BLACK = (0, 0, 0)
     GREY = (110, 110, 110)
     BOUNDARY = (220, 50, 50)
+    MAGENTA = (255, 0, 255)
+    WHITE = (255, 255, 255)
+    DOT_R = 4
 
     iw, ih = img.size
     canvas = Image.new("RGB", (iw + LEFT, ih + BOTTOM), (255, 255, 255))
@@ -145,6 +148,18 @@ def _add_ruler_overlay(img, screen: str):
         draw.text((4, 14), "(no", fill=GREY, font=font)
         draw.text((4, 26), "touch)", fill=GREY, font=font)
 
+    # Active-touch indicator: magenta dot at the live touch position.
+    # Only visible when the touch falls inside the rendered screen region.
+    if touch_pos is not None and screen in ("bottom", "both"):
+        tx, ty = touch_pos
+        cx = LEFT + tx
+        cy = ty + (SCREEN_HEIGHT if screen == "both" else 0)
+        # White halo for visibility on any background, magenta fill.
+        draw.ellipse([cx - DOT_R - 1, cy - DOT_R - 1, cx + DOT_R + 1, cy + DOT_R + 1],
+                     outline=WHITE, width=1)
+        draw.ellipse([cx - DOT_R, cy - DOT_R, cx + DOT_R, cy + DOT_R],
+                     fill=MAGENTA, outline=WHITE, width=1)
+
     return canvas
 
 
@@ -162,6 +177,9 @@ class Daemon:
         # _hits collects pending hits to return on the next step boundary.
         self._hooks: dict[tuple[str, int], Any] = {}
         self._hits: list[dict] = []
+        # Last touch position (touch-screen coords) while the stylus is down,
+        # so --overlay screenshots can draw a magenta dot at the contact point.
+        self._touch_pos: tuple[int, int] | None = None
         self.handlers: dict[str, Callable] = {
             "ping": self._ping,
             "boot": self._boot,
@@ -219,6 +237,7 @@ class Daemon:
         # Drop any stale hooks from the previous session before swapping ROMs.
         self._clear_all_hooks()
         self._hits = []
+        self._touch_pos = None
         self.emu.open(rom, auto_resume=True)
         self.rom = rom
         self.frame_count = 0
@@ -227,6 +246,7 @@ class Daemon:
     async def _close(self, _):
         self._clear_all_hooks()
         self._hits = []
+        self._touch_pos = None
         self.emu.close()
         self.rom = None
         self.frame_count = 0
@@ -240,6 +260,7 @@ class Daemon:
         self._require_rom()
         self.emu.reset()
         self.frame_count = 0
+        self._touch_pos = None
         return {}
 
     def _require_rom(self):
@@ -400,11 +421,14 @@ class Daemon:
         elif screen != "both":
             raise ValueError(f"screen must be top|bottom|both, got {screen!r}")
         if overlay:
-            img = _add_ruler_overlay(img, screen)
+            img = _add_ruler_overlay(img, screen, self._touch_pos)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         img.save(path, "PNG")
-        return {"path": os.path.abspath(path), "w": img.width, "h": img.height,
-                "screen": screen, "overlay": overlay, "frame": self.frame_count}
+        out = {"path": os.path.abspath(path), "w": img.width, "h": img.height,
+               "screen": screen, "overlay": overlay, "frame": self.frame_count}
+        if self._touch_pos is not None:
+            out["touch"] = {"x": self._touch_pos[0], "y": self._touch_pos[1]}
+        return out
 
     async def _press(self, args):
         self.emu.input.keypad_add_key(resolve_key(args["key"]))
@@ -436,10 +460,12 @@ class Daemon:
         else:
             raise ValueError(f"touch mode must be 'norm' or 'pixels', got {mode!r}")
         self.emu.input.touch_set_pos(px, py)
+        self._touch_pos = (px, py)
         return {"pixel": {"x": px, "y": py}}
 
     async def _touch_release(self, _):
         self.emu.input.touch_release()
+        self._touch_pos = None
         return {}
 
     async def _mic_blow(self, args):
