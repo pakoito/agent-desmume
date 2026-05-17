@@ -10,7 +10,14 @@ license = "GPL-3.0-or-later"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "py-desmume>=0.0.9",
+    # Fork of SkyTemple/py-desmume bumped to upstream DeSmuME 0.9.13 with
+    # HAVE_LIBZ enabled, so .dst savestates produced by the standalone 0.9.13
+    # GUI (which always writes compressed) actually load. The published
+    # py-desmume 0.0.9 wheel ships DeSmuME 0.9.12 without zlib support.
+    # `pip install` will git-clone py-desmume + its submodule and run meson;
+    # build deps required: meson ninja-build libsdl2-dev libpcap-dev
+    # libglib2.0-dev zlib1g-dev libopenal-dev libsoundtouch-dev libagg-dev.
+    "py-desmume @ git+https://github.com/pakoito/py-desmume.git@0.9.13-agent-desmume",
 ]
 
 [project.scripts]
