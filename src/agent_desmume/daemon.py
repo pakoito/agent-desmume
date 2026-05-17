@@ -47,6 +47,304 @@ REG_NAMES = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
 REG_ALIASES = {"sp": "r13", "lr": "r14", "pc": "r15"}
 
 
+class RichError(RuntimeError):
+    """RuntimeError carrying structured diagnostic data for the JSON response.
+
+    py-desmume bubbles up generic strings like "Unable to load savesate." while
+    the real DeSmuME error goes to a no-op `msgBoxFake` callback. Handlers
+    raise RichError when they can attach pre-call inspection and a hint; the
+    transport adds `hint` and `inspection` fields to the JSON error response.
+    """
+    def __init__(self, msg: str, *, hint: str = "", inspection: dict | None = None):
+        super().__init__(msg)
+        self.hint = hint
+        self.inspection = inspection or {}
+
+
+# py-desmume 0.0.9 vendors DeSmuME 0.9.12. Its savestate magic is the version
+# encoded as MAJOR*10000 + MINOR*100 + PATCH, i.e. 91200.
+DAEMON_DESMUME_MAGIC = 91200
+SAVESTATE_FORMAT_VERSION = 12
+SAVESTATE_SIG = b"DeSmuME SState\x00\x00"
+
+
+def _decode_desmume_magic(m: int) -> str:
+    # major*10000 + minor*100 + patch
+    major = m // 10000
+    minor = (m // 100) % 100
+    patch = m % 100
+    return f"{major}.{minor}.{patch} (raw={m})"
+
+
+def _inspect_savestate_file(path: str) -> dict:
+    """Read the .dst header (and zlib payload if present) for diagnostics.
+
+    Returns a dict with at minimum {"exists": bool}. When the file looks like a
+    DeSmuME savestate, also includes signature/version/magic/sizes/compressed,
+    and for compressed files a `zlib_ok` flag from a trial inflate.
+    """
+    info: dict[str, Any] = {"path": os.path.abspath(path)}
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        info["exists"] = False
+        return info
+    except OSError as e:
+        info["exists"] = False
+        info["error"] = f"{type(e).__name__}: {e}"
+        return info
+    info["exists"] = True
+    info["size"] = st.st_size
+    if st.st_size < 32:
+        info["error"] = "file shorter than 32-byte savestate header"
+        return info
+    try:
+        with open(path, "rb") as f:
+            head = f.read(32)
+            body_head = f.read(64)
+    except OSError as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+        return info
+    info["signature_ok"] = head[:16] == SAVESTATE_SIG
+    info["signature_raw"] = head[:16].hex()
+    if not info["signature_ok"]:
+        return info
+    fmt_version = int.from_bytes(head[16:20], "little")
+    creator_magic = int.from_bytes(head[20:24], "little")
+    uncompressed_size = int.from_bytes(head[24:28], "little")
+    compressed_field = int.from_bytes(head[28:32], "little")
+    info["format_version"] = fmt_version
+    info["creator_desmume"] = _decode_desmume_magic(creator_magic)
+    info["uncompressed_size"] = uncompressed_size
+    info["compressed"] = compressed_field != 0xFFFFFFFF
+    info["compressed_size"] = None if not info["compressed"] else compressed_field
+    info["payload_head_hex"] = body_head[:8].hex()
+    if info["compressed"]:
+        # Spot-check: is the payload a valid zlib stream we can inflate to the
+        # advertised size? If yes, the file itself is fine but the loader may
+        # not have zlib support compiled in (older py-desmume builds don't).
+        try:
+            import zlib
+            with open(path, "rb") as f:
+                f.seek(32)
+                payload = f.read(compressed_field)
+            inflated = zlib.decompress(payload)
+            info["zlib_ok"] = True
+            info["inflated_size"] = len(inflated)
+        except Exception as e:
+            info["zlib_ok"] = False
+            info["zlib_error"] = f"{type(e).__name__}: {e}"
+    return info
+
+
+def _libdesmume_has_zlib_savestates() -> bool:
+    """Best-effort check: does the vendored libdesmume import zlib symbols
+    needed for compressed savestates? Inspect the .so once and cache."""
+    global _ZLIB_CHECK_RESULT
+    try:
+        return _ZLIB_CHECK_RESULT  # type: ignore[name-defined]
+    except NameError:
+        pass
+    import subprocess
+    from desmume import emulator as _de
+    try:
+        so = os.path.join(os.path.dirname(_de.__file__), "libdesmume.so")
+        out = subprocess.run(
+            ["readelf", "--dyn-syms", so], capture_output=True, text=True, timeout=5
+        ).stdout
+        _ZLIB_CHECK_RESULT = any(s in out for s in (" inflate", " deflate", " uncompress"))
+    except Exception:
+        _ZLIB_CHECK_RESULT = True  # be permissive if we can't tell
+    return _ZLIB_CHECK_RESULT
+
+
+def _explain_savestate_failure(diag: dict) -> str:
+    if not diag.get("exists"):
+        return "file does not exist"
+    if not diag.get("signature_ok", False):
+        return ("file is not a DeSmuME savestate "
+                f"(first 16 bytes: {diag.get('signature_raw')})")
+    fv = diag.get("format_version")
+    if fv != SAVESTATE_FORMAT_VERSION:
+        return (f"unsupported savestate format version {fv}; "
+                f"daemon's DeSmuME 0.9.12 only handles version {SAVESTATE_FORMAT_VERSION}")
+    creator = diag.get("creator_desmume", "?")
+    daemon_v = _decode_desmume_magic(DAEMON_DESMUME_MAGIC)
+    if diag.get("compressed"):
+        if not diag.get("zlib_ok", True):
+            return f"compressed payload won't inflate: {diag.get('zlib_error')}"
+        if not _libdesmume_has_zlib_savestates():
+            return ("savestate is zlib-compressed but the vendored libdesmume.so was "
+                    "built without zlib decompression — load fails before reading any chunks")
+    if creator != daemon_v:
+        return (f"savestate was created by DeSmuME {creator} but the daemon is "
+                f"running DeSmuME {daemon_v}; chunk format changed between minor "
+                "versions, so loading across versions usually fails. Re-save the "
+                "state from the same DeSmuME the daemon uses, or downgrade the GUI emulator.")
+    return ("looks valid; loader probably hit an unrecognized chunk. Stderr in the "
+            "daemon log may have more detail.")
+
+
+def _inspect_rom_file(path: str) -> dict:
+    """Read the first 512 bytes of an .nds file and pull out the standard
+    Nintendo DS cart header so we can explain why ``emu.open`` rejected it.
+
+    Header layout: https://problemkaputt.de/gbatek.htm#dscartridgeheader
+    """
+    info: dict[str, Any] = {"path": os.path.abspath(path)}
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        info["exists"] = False
+        return info
+    except OSError as e:
+        info["exists"] = False
+        info["error"] = f"{type(e).__name__}: {e}"
+        return info
+    info["exists"] = True
+    info["size"] = st.st_size
+    info["readable"] = os.access(path, os.R_OK)
+    if st.st_size < 0x200:
+        info["error"] = "file shorter than NDS header (512 bytes)"
+        return info
+    try:
+        with open(path, "rb") as f:
+            hdr = f.read(0x200)
+    except OSError as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+        return info
+    try:
+        info["game_title"] = hdr[0:12].split(b"\x00", 1)[0].decode("ascii", "replace").strip()
+        info["game_code"] = hdr[0x0c:0x10].decode("ascii", "replace")
+        info["maker_code"] = hdr[0x10:0x12].decode("ascii", "replace")
+        info["unit_code"] = hdr[0x12]
+        cap = hdr[0x14]
+        info["device_capacity_log"] = cap
+        info["device_capacity_bytes"] = (128 * 1024) << cap if cap < 32 else None
+        info["rom_version"] = hdr[0x1e]
+        info["arm9_rom_offset"] = int.from_bytes(hdr[0x20:0x24], "little")
+        info["arm9_entry_address"] = int.from_bytes(hdr[0x24:0x28], "little")
+    except Exception as e:
+        info["parse_error"] = f"{type(e).__name__}: {e}"
+    return info
+
+
+def _explain_rom_failure(diag: dict) -> str:
+    if not diag.get("exists"):
+        return "file does not exist"
+    if not diag.get("readable", True):
+        return "file exists but is not readable (permissions)"
+    if "error" in diag:
+        return diag["error"]
+    sz = diag.get("size", 0)
+    if sz < 0x200:
+        return "file too short for an NDS header"
+    code = diag.get("game_code", "")
+    if not code or not all(ch.isprintable() for ch in code):
+        return (f"NDS header looks corrupt or this is not a DS ROM "
+                f"(gamecode={code!r}, size={sz})")
+    return (f"emulator refused to open the ROM (size={sz}, gamecode={code!r}, "
+            f"title={diag.get('game_title')!r}); possibly encrypted, "
+            "compressed (.zip/.7z aren't supported headlessly), or wrong format")
+
+
+def _inspect_battery_file(path: str) -> dict:
+    """Inspect a .sav (raw) / .dsv (DeSmuME) backup save file."""
+    info: dict[str, Any] = {"path": os.path.abspath(path)}
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        info["exists"] = False
+        return info
+    except OSError as e:
+        info["exists"] = False
+        info["error"] = f"{type(e).__name__}: {e}"
+        return info
+    info["exists"] = True
+    info["size"] = st.st_size
+    info["extension"] = os.path.splitext(path)[1].lower()
+    # Powers-of-2 from 512 B (4 Kbit EEPROM) to 8 MB (NAND).
+    canonical = {512, 8192, 32768, 65536, 131072, 262144, 524288, 1048576, 8388608}
+    info["size_is_canonical_raw"] = st.st_size in canonical
+    if info["extension"] == ".dsv":
+        # DeSmuME signs .dsv files with a trailer; the magic literal is
+        # `|-DESMUME SAVE-|` and sits at the very end of the file.
+        try:
+            with open(path, "rb") as f:
+                f.seek(max(0, st.st_size - 64))
+                tail = f.read()
+            info["dsv_footer_present"] = b"|-DESMUME SAVE-|" in tail
+            info["dsv_tail_hex"] = tail[-32:].hex()
+        except OSError as e:
+            info["error"] = f"{type(e).__name__}: {e}"
+    return info
+
+
+def _explain_backup_failure(diag: dict) -> str:
+    if not diag.get("exists"):
+        return "file does not exist"
+    sz = diag.get("size", 0)
+    if sz == 0:
+        return "file is empty"
+    ext = diag.get("extension")
+    if ext == ".dsv" and diag.get("dsv_footer_present") is False:
+        return ("file has .dsv extension but is missing the "
+                "`|-DESMUME SAVE-|` trailer DeSmuME writes; it may be a raw "
+                ".sav misnamed, or corrupt")
+    if ext in {".sav", ""} and not diag.get("size_is_canonical_raw", True):
+        return (f"raw .sav size {sz} is not a recognised DS backup size; "
+                "try --force-size N (e.g. 65536, 524288)")
+    return "backup import returned false; format may not match cartridge"
+
+
+def _inspect_movie_file(path: str) -> dict:
+    """Inspect a .dsm TAS movie file. DeSmuME movies start with an ASCII
+    header (`version 1\\nemuVersion 12\\nrerecordCount …`)."""
+    info: dict[str, Any] = {"path": os.path.abspath(path)}
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        info["exists"] = False
+        return info
+    except OSError as e:
+        info["exists"] = False
+        info["error"] = f"{type(e).__name__}: {e}"
+        return info
+    info["exists"] = True
+    info["size"] = st.st_size
+    try:
+        with open(path, "rb") as f:
+            head = f.read(256)
+        info["text_format"] = head.startswith(b"version ")
+        info["head_preview"] = head[:96].decode("latin-1", "replace")
+    except OSError as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+    return info
+
+
+def _inspect_output_path(path: str) -> dict:
+    """Check writability of a path we're about to create."""
+    apath = os.path.abspath(path)
+    parent = os.path.dirname(apath) or "."
+    info: dict[str, Any] = {"path": apath, "parent": parent}
+    info["parent_exists"] = os.path.isdir(parent)
+    info["parent_writable"] = info["parent_exists"] and os.access(parent, os.W_OK)
+    info["target_exists"] = os.path.exists(apath)
+    if info["target_exists"]:
+        info["target_writable"] = os.access(apath, os.W_OK)
+    return info
+
+
+def _explain_output_failure(diag: dict) -> str:
+    if not diag.get("parent_exists"):
+        return f"parent directory does not exist: {diag.get('parent')}"
+    if not diag.get("parent_writable"):
+        return f"parent directory not writable: {diag.get('parent')}"
+    if diag.get("target_exists") and not diag.get("target_writable", True):
+        return "target file exists but is not writable"
+    return "write failed for an unknown reason (check disk space)"
+
+
 def _add_ruler_overlay(img, screen: str, touch_pos: tuple[int, int] | None = None):
     """Pad the screenshot with rulers on all 4 sides, labelled in TOUCH coords.
 
@@ -258,13 +556,19 @@ class Daemon:
 
     async def _boot(self, args):
         rom = args["rom"]
-        if not os.path.isfile(rom):
-            raise FileNotFoundError(rom)
+        diag = _inspect_rom_file(rom)
+        if not diag.get("exists"):
+            raise RichError(f"ROM not found: {rom}",
+                            hint=_explain_rom_failure(diag), inspection=diag)
         # Drop any stale hooks from the previous session before swapping ROMs.
         self._clear_all_hooks()
         self._hits = []
         self._touch_pos = None
-        self.emu.open(rom, auto_resume=True)
+        try:
+            self.emu.open(rom, auto_resume=True)
+        except RuntimeError as e:
+            raise RichError(str(e),
+                            hint=_explain_rom_failure(diag), inspection=diag) from e
         self.rom = rom
         self.frame_count = 0
         return {"rom": rom}
@@ -505,23 +809,58 @@ class Daemon:
 
     async def _state_save(self, args):
         self._require_rom()
-        self.emu.savestate.save(int(args["slot"]))
-        return {"slot": int(args["slot"])}
+        slot = int(args["slot"])
+        if not 0 <= slot <= 9:
+            raise RichError(f"invalid savestate slot {slot}",
+                            inspection={"slot": slot, "valid_range": [0, 9]})
+        self.emu.savestate.save(slot)
+        return {"slot": slot}
 
     async def _state_load(self, args):
         self._require_rom()
-        self.emu.savestate.load(int(args["slot"]))
-        return {"slot": int(args["slot"])}
+        slot = int(args["slot"])
+        if not 0 <= slot <= 9:
+            raise RichError(f"invalid savestate slot {slot}",
+                            inspection={"slot": slot, "valid_range": [0, 9]})
+        # scan() refreshes the in-memory bookkeeping the existence check uses.
+        try:
+            self.emu.savestate.scan()
+            exists = bool(self.emu.savestate.exists(slot))
+        except Exception:
+            exists = None
+        if exists is False:
+            raise RichError(f"savestate slot {slot} is empty",
+                            hint="no state saved here yet; call 'state save' first",
+                            inspection={"slot": slot, "exists": False})
+        self.emu.savestate.load(slot)
+        return {"slot": slot}
 
     async def _state_save_file(self, args):
         self._require_rom()
-        self.emu.savestate.save_file(args["path"])
-        return {"path": os.path.abspath(args["path"])}
+        path = args["path"]
+        out = _inspect_output_path(path)
+        try:
+            self.emu.savestate.save_file(path)
+        except RuntimeError as e:
+            raise RichError(str(e),
+                            hint=_explain_output_failure(out),
+                            inspection=out) from e
+        return {"path": os.path.abspath(path)}
 
     async def _state_load_file(self, args):
         self._require_rom()
-        self.emu.savestate.load_file(args["path"])
-        return {"path": os.path.abspath(args["path"])}
+        path = args["path"]
+        # py-desmume's wrapper only surfaces "Unable to load savesate." and the
+        # real DeSmuME error string goes to a no-op `msgBoxFake` callback, so
+        # we pre-inspect the file and attach diagnostics on failure.
+        diag = _inspect_savestate_file(path)
+        try:
+            self.emu.savestate.load_file(path)
+        except RuntimeError as e:
+            raise RichError(str(e),
+                            hint=_explain_savestate_failure(diag),
+                            inspection=diag) from e
+        return {"path": os.path.abspath(path)}
 
     async def _read_mem(self, args):
         self._require_rom()
@@ -600,17 +939,33 @@ class Daemon:
         self._require_rom()
         path = args["path"]
         force_size = int(args.get("force_size", 0))
-        ok = self.emu.backup.import_file(path, force_size=force_size)
+        diag = _inspect_battery_file(path)
+        if not diag.get("exists"):
+            raise RichError(f"backup file not found: {path}",
+                            hint=_explain_backup_failure(diag), inspection=diag)
+        try:
+            ok = self.emu.backup.import_file(path, force_size=force_size)
+        except FileNotFoundError as e:
+            raise RichError(str(e),
+                            hint=_explain_backup_failure(diag), inspection=diag) from e
+        if not ok:
+            raise RichError("backup import failed",
+                            hint=_explain_backup_failure(diag), inspection=diag)
         # import_file auto-resets the emulator on success.
-        if ok:
-            self.frame_count = 0
-        return {"path": os.path.abspath(path), "imported": bool(ok),
+        self.frame_count = 0
+        return {"path": os.path.abspath(path), "imported": True,
                 "force_size": force_size}
 
     async def _backup_export(self, args):
         self._require_rom()
         path = args["path"]
+        out = _inspect_output_path(path)
         ok = self.emu.backup.export_file(path)
+        if not ok and not out.get("parent_writable", True):
+            raise RichError("backup export failed",
+                            hint=_explain_output_failure(out), inspection=out)
+        # Documented behaviour: returns False if the game hasn't initialised
+        # save data yet. Leave that as a soft signal rather than an error.
         return {"path": os.path.abspath(path), "exported": bool(ok)}
 
     # ── movie (TAS .dsm) ──────────────────────────────────────────────────
@@ -619,13 +974,25 @@ class Daemon:
         self._require_rom()
         path = args["path"]
         author = args.get("author", "agent-desmume")
+        out = _inspect_output_path(path)
+        if not out.get("parent_exists"):
+            raise RichError(f"cannot record to {path}",
+                            hint=_explain_output_failure(out), inspection=out)
         self.emu.movie.record(path, author)
         return {"path": os.path.abspath(path), "author": author, "recording": True}
 
     async def _movie_play(self, args):
         self._require_rom()
         path = args["path"]
-        self.emu.movie.play(path)
+        # py-desmume.movie.play already returns DeSmuME's own error string when
+        # playback fails — wrap it so the structured `inspection` still helps.
+        diag = _inspect_movie_file(path)
+        if not diag.get("exists"):
+            raise RichError(f"movie file not found: {path}", inspection=diag)
+        try:
+            self.emu.movie.play(path)
+        except RuntimeError as e:
+            raise RichError(str(e), inspection=diag) from e
         return {"path": os.path.abspath(path), "playing": True}
 
     async def _movie_stop(self, _):
@@ -727,6 +1094,11 @@ class Daemon:
                 except Exception as e:
                     resp = {"id": req.get("id") if isinstance(req, dict) else None,
                             "ok": False, "error": f"{type(e).__name__}: {e}"}
+                    if isinstance(e, RichError):
+                        if e.hint:
+                            resp["hint"] = e.hint
+                        if e.inspection:
+                            resp["inspection"] = e.inspection
                 writer.write((json.dumps(resp) + "\n").encode("utf-8"))
                 await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
