@@ -36,7 +36,7 @@ ln -s "$(pwd)/SKILL.md" ~/.claude/skills/agent-desmume/SKILL.md
 agent-desmume boot /path/to/game.nds
 agent-desmume step 600                  # advance ~10 seconds
 agent-desmume screenshot title.png      # both screens, 256×384 PNG
-agent-desmume screenshot title.png --overlay   # … with bottom+left touch-coord rulers
+agent-desmume screenshot title.png --overlay   # … with touch-coord rulers on all 4 sides
 agent-desmume tap START                 # press + step + release
 agent-desmume touch 0.5 0.7             # touch the bottom screen at 50%, 70%
 agent-desmume touch 128 96 --pixels     # … or by integer pixel (clamped to 0..255, 0..191)

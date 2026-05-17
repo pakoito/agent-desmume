@@ -48,7 +48,7 @@ REG_ALIASES = {"sp": "r13", "lr": "r14", "pc": "r15"}
 
 
 def _add_ruler_overlay(img, screen: str, touch_pos: tuple[int, int] | None = None):
-    """Pad the screenshot with bottom + left rulers labelled in TOUCH coords.
+    """Pad the screenshot with rulers on all 4 sides, labelled in TOUCH coords.
 
     The Nintendo DS touch screen is the bottom screen only, with origin (0,0)
     at its top-left, going right (+x → 255) and down (+y → 191).
@@ -61,11 +61,14 @@ def _add_ruler_overlay(img, screen: str, touch_pos: tuple[int, int] | None = Non
                 bottom half (image y 192..383 → touch y 0..191); the top half
                 shows tick marks only, with a "TOP — not touchable" caption.
                 A red line marks the screen boundary at image y=192.
+
+    A uniform PAD-pixel margin is added on every side. "pad=Npx" labels in
+    all four corners advertise the margin size so the agent can subtract it
+    when mapping canvas pixels back to image pixels.
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    LEFT = 56
-    BOTTOM = 40
+    PAD = 52
     STEP = 32
     BLACK = (0, 0, 0)
     GREY = (110, 110, 110)
@@ -75,8 +78,9 @@ def _add_ruler_overlay(img, screen: str, touch_pos: tuple[int, int] | None = Non
     DOT_R = 2
 
     iw, ih = img.size
-    canvas = Image.new("RGB", (iw + LEFT, ih + BOTTOM), (255, 255, 255))
-    canvas.paste(img, (LEFT, 0))
+    cw, ch = iw + 2 * PAD, ih + 2 * PAD
+    canvas = Image.new("RGB", (cw, ch), (255, 255, 255))
+    canvas.paste(img, (PAD, PAD))
     draw = ImageDraw.Draw(canvas)
 
     try:
@@ -90,71 +94,93 @@ def _add_ruler_overlay(img, screen: str, touch_pos: tuple[int, int] | None = Non
         except AttributeError:
             return len(s) * 6
 
-    # Bottom axis (x). Same dimension for all screens (256 wide); for `bottom`
-    # and `both` this is touch x. For `top`, it's just top-screen-x in grey.
+    img_top, img_bot = PAD, PAD + ih
+    img_left, img_right = PAD, PAD + iw
+
+    # ---- X-axis rulers (top + bottom). Same dimension across all screens. ----
     x_is_touch = screen in ("bottom", "both")
     px_color = BLACK if x_is_touch else GREY
     for x in range(0, iw, STEP):
-        xc = LEFT + x
-        draw.line([(xc, ih), (xc, ih + 4)], fill=BLACK, width=1)
+        xc = PAD + x
         px_t = str(x)
-        draw.text((xc - text_w(px_t) / 2, ih + 6), px_t, fill=px_color, font=font)
-        if x_is_touch:
-            pct = round(x / (SCREEN_WIDTH - 1) * 100)
-            pct_t = f"{pct}%"
-            draw.text((xc - text_w(pct_t) / 2, ih + 22), pct_t, fill=GREY, font=font)
+        pct_t = f"{round(x / (SCREEN_WIDTH - 1) * 100)}%" if x_is_touch else None
 
-    # Left axis (y). Labelling depends on which region of the image is touchable.
-    # We iterate over image-y, but show touch_y for the touchable portion.
+        # Bottom ruler: ticks extend down from the image edge; labels below.
+        draw.line([(xc, img_bot), (xc, img_bot + 4)], fill=BLACK, width=1)
+        draw.text((xc - text_w(px_t) / 2, img_bot + 6), px_t, fill=px_color, font=font)
+        if pct_t is not None:
+            draw.text((xc - text_w(pct_t) / 2, img_bot + 22), pct_t, fill=GREY, font=font)
+
+        # Top ruler: ticks extend up from the image edge; labels above (mirror).
+        draw.line([(xc, img_top), (xc, img_top - 4)], fill=BLACK, width=1)
+        draw.text((xc - text_w(px_t) / 2, img_top - 16), px_t, fill=px_color, font=font)
+        if pct_t is not None:
+            draw.text((xc - text_w(pct_t) / 2, img_top - 32), pct_t, fill=GREY, font=font)
+
+    # ---- Y-axis rulers (left + right). Layout depends on screen mode. ----
+    # Label columns sized for max widths "192" (~18 px) and "100%" (~25 px) in
+    # the default font. With PAD=52, tick at PAD-4..PAD leaves ~48 px for two
+    # columns side-by-side: px nearer x=2, pct nearer x=22.
+    def draw_y_row(yc, px_label, pct_label, px_col, tick_col=BLACK, text_dy=-5):
+        # Left tick + labels.
+        draw.line([(img_left - 4, yc), (img_left, yc)], fill=tick_col, width=1)
+        y_text = yc + text_dy
+        draw.text((2, y_text), px_label, fill=px_col, font=font)
+        if pct_label is not None:
+            draw.text((22, y_text), pct_label, fill=GREY, font=font)
+        # Right tick + labels (mirror: pct nearer the image, px further out).
+        draw.line([(img_right, yc), (img_right + 4, yc)], fill=tick_col, width=1)
+        if pct_label is not None:
+            draw.text((img_right + 4, y_text), pct_label, fill=GREY, font=font)
+            draw.text((img_right + 32, y_text), px_label, fill=px_col, font=font)
+        else:
+            draw.text((img_right + 6, y_text), px_label, fill=px_col, font=font)
+
+    def _text_dy(y, ih_):
+        return -5 if y < ih_ - 1 else -10
+
     if screen == "bottom":
-        # Image y == touch y directly.
-        y_ticks = list(range(0, ih, STEP)) + [ih - 1]
-        for y in y_ticks:
-            yc = y
-            draw.line([(LEFT - 4, yc), (LEFT, yc)], fill=BLACK, width=1)
+        for y in list(range(0, ih, STEP)) + [ih - 1]:
             pct = round(y / (SCREEN_HEIGHT - 1) * 100)
-            y_text = yc - 5 if y < ih - 1 else yc - 10
-            draw.text((4, y_text), str(y), fill=BLACK, font=font)
-            draw.text((28, y_text), f"{pct}%", fill=GREY, font=font)
+            draw_y_row(img_top + y, str(y), f"{pct}%", BLACK, text_dy=_text_dy(y, ih))
     elif screen == "top":
-        # Top screen is not touchable; show pixel-only labels in grey.
-        y_ticks = list(range(0, ih, STEP)) + [ih - 1]
-        for y in y_ticks:
-            yc = y
-            draw.line([(LEFT - 4, yc), (LEFT, yc)], fill=BLACK, width=1)
-            y_text = yc - 5 if y < ih - 1 else yc - 10
-            draw.text((4, y_text), str(y), fill=GREY, font=font)
+        for y in list(range(0, ih, STEP)) + [ih - 1]:
+            draw_y_row(img_top + y, str(y), None, GREY, text_dy=_text_dy(y, ih))
     elif screen == "both":
-        # Top half (image y < SCREEN_HEIGHT): tick marks only (not touchable).
-        # Bottom half (image y >= SCREEN_HEIGHT): labels show touch_y = y - 192.
-        # Include image y == SCREEN_HEIGHT (touch_y=0) and image y == ih-1 (touch_y=191).
+        # Top half: tick marks only (not touchable).
         for y in range(0, SCREEN_HEIGHT, STEP):
-            yc = y
-            draw.line([(LEFT - 4, yc), (LEFT, yc)], fill=GREY, width=1)
-        y_bottom_ticks = list(range(SCREEN_HEIGHT, ih, STEP)) + [ih - 1]
-        for y in y_bottom_ticks:
-            yc = y
-            draw.line([(LEFT - 4, yc), (LEFT, yc)], fill=BLACK, width=1)
+            yc = img_top + y
+            draw.line([(img_left - 4, yc), (img_left, yc)], fill=GREY, width=1)
+            draw.line([(img_right, yc), (img_right + 4, yc)], fill=GREY, width=1)
+        # Bottom half: labels show touch_y = image_y - 192.
+        for y in list(range(SCREEN_HEIGHT, ih, STEP)) + [ih - 1]:
             touch_y = y - SCREEN_HEIGHT
             pct = round(touch_y / (SCREEN_HEIGHT - 1) * 100)
-            y_text = yc - 5 if y < ih - 1 else yc - 10
-            draw.text((4, y_text), str(touch_y), fill=BLACK, font=font)
-            draw.text((28, y_text), f"{pct}%", fill=GREY, font=font)
-        # Red boundary line at image y=192 (top of touch screen).
-        draw.line([(LEFT, SCREEN_HEIGHT), (LEFT + iw - 1, SCREEN_HEIGHT)],
+            draw_y_row(img_top + y, str(touch_y), f"{pct}%", BLACK,
+                       text_dy=_text_dy(y, ih))
+        # Red boundary line at top of touch screen.
+        draw.line([(img_left, img_top + SCREEN_HEIGHT),
+                   (img_right - 1, img_top + SCREEN_HEIGHT)],
                   fill=BOUNDARY, width=1)
-        # Caption in the empty top-left corner: "top: no touch" sideways.
-        draw.text((4, 2), "TOP", fill=GREY, font=font)
-        draw.text((4, 14), "(no", fill=GREY, font=font)
-        draw.text((4, 26), "touch)", fill=GREY, font=font)
+        # "TOP (no touch)" caption stacked against the non-touchable top half.
+        cap_y = img_top + 60
+        draw.text((4, cap_y), "TOP", fill=GREY, font=font)
+        draw.text((4, cap_y + 12), "(no", fill=GREY, font=font)
+        draw.text((4, cap_y + 24), "touch)", fill=GREY, font=font)
 
-    # Active-touch indicator: magenta dot at the live touch position.
-    # Only visible when the touch falls inside the rendered screen region.
+    # ---- Padding-size label in each corner (so the agent knows the margin). ----
+    pad_t = f"pad={PAD}px"
+    pw = text_w(pad_t)
+    draw.text((4, 4), pad_t, fill=GREY, font=font)
+    draw.text((cw - pw - 4, 4), pad_t, fill=GREY, font=font)
+    draw.text((4, ch - 14), pad_t, fill=GREY, font=font)
+    draw.text((cw - pw - 4, ch - 14), pad_t, fill=GREY, font=font)
+
+    # ---- Active-touch indicator: magenta dot at the live touch position. ----
     if touch_pos is not None and screen in ("bottom", "both"):
         tx, ty = touch_pos
-        cx = LEFT + tx
-        cy = ty + (SCREEN_HEIGHT if screen == "both" else 0)
-        # White halo for visibility on any background, magenta fill.
+        cx = PAD + tx
+        cy = PAD + ty + (SCREEN_HEIGHT if screen == "both" else 0)
         draw.ellipse([cx - DOT_R - 1, cy - DOT_R - 1, cx + DOT_R + 1, cy + DOT_R + 1],
                      outline=WHITE, width=1)
         draw.ellipse([cx - DOT_R, cy - DOT_R, cx + DOT_R, cy + DOT_R],

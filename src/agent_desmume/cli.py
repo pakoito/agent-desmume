@@ -321,11 +321,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("path")
     s.add_argument("--screen", choices=["top", "bottom", "both"], default="both")
     s.add_argument("--overlay", action="store_true",
-                   help="Pad image with bottom+left rulers (pixel + percent labels) "
-                        "to help locate touch coords. For --screen both, a red line "
-                        "marks the boundary at y=192 below which is the touch screen. "
-                        "If a touch is currently active, a magenta dot is drawn at "
-                        "the contact point (bottom/both only).")
+                   help="Pad image with rulers on all 4 sides (pixel + percent labels) "
+                        "to help locate touch coords. Each side has a 52-px margin "
+                        "(advertised as 'pad=52px' in every corner) so the agent can "
+                        "subtract it when mapping canvas pixels back to image pixels. "
+                        "For --screen both, a red line marks the boundary at y=192 "
+                        "below which is the touch screen. If a touch is currently "
+                        "active, a magenta dot is drawn at the contact point "
+                        "(bottom/both only).")
     s.set_defaults(fn=cmd_screenshot)
 
     s = sub.add_parser("press"); s.add_argument("key"); s.set_defaults(fn=cmd_press)

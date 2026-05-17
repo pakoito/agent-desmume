@@ -85,7 +85,7 @@ All verbs accept `--session NAME` (default `default`, overridable via `$AGENT_DE
 - `agent-desmume screenshot PATH [--screen top|bottom|both] [--overlay]` — write PNG.
   - `both` = 256×384, top above bottom (default).
   - `top` = 256×192. `bottom` = 256×192 (this is the touch screen).
-  - `--overlay` pads the PNG with a **bottom + left ruler** labelled in **touch-screen coords** (pixels + percent). For `--screen bottom`, the ruler maps 1:1 to the args you'd pass to `touch`. For `--screen both`, the y-axis labels only the touch (bottom) half of the image — image y=192 is touch y=0 — and a red line marks the screen boundary; the top half is labelled "TOP (no touch)". For `--screen top`, labels are pixel-only in grey since the top screen isn't touchable. Use this when you need an LLM to look at a screenshot and decide where to `touch`.
+  - `--overlay` pads the PNG with **rulers on all 4 sides (top, bottom, left, right)** labelled in **touch-screen coords** (pixels + percent). The margin is **52 px** on every side and is advertised as `pad=52px` in each corner — subtract it from any canvas pixel before mapping to image pixels. For `--screen bottom`, the rulers map 1:1 to the args you'd pass to `touch`. For `--screen both`, the y-axis labels only the touch (bottom) half of the image — image y=192 is touch y=0 — and a red line marks the screen boundary; the top half is labelled "TOP (no touch)". For `--screen top`, labels are pixel-only in grey since the top screen isn't touchable. Use this when you need an LLM to look at a screenshot and decide where to `touch`.
   - When a touch is currently active (you've called `touch` and not yet `untouch`), `--overlay` also draws a small **magenta dot** at the contact point on `bottom` / `both` screenshots — useful for confirming "did I tap where I meant to?". The response JSON includes `"touch": {"x", "y"}` whenever a touch is live.
 
 ### Input
@@ -210,7 +210,7 @@ agent-desmume screenshot title.png
 ### "Tap a UI element you can only see in a screenshot"
 ```bash
 agent-desmume screenshot menu.png --screen bottom --overlay
-# Open menu.png. The left/bottom rulers are touch coords. Read off the pixel
+# Open menu.png. The rulers (all 4 sides) are touch coords. Read off the pixel
 # coords of whatever you want to tap (e.g. an "OK" button at ~x=210, y=170).
 agent-desmume touch 210 170 --pixels
 agent-desmume screenshot aim.png --screen bottom --overlay   # magenta dot shows the contact point
