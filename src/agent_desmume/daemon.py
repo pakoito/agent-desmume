@@ -47,6 +47,107 @@ REG_NAMES = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
 REG_ALIASES = {"sp": "r13", "lr": "r14", "pc": "r15"}
 
 
+def _add_ruler_overlay(img, screen: str):
+    """Pad the screenshot with bottom + left rulers labelled in TOUCH coords.
+
+    The Nintendo DS touch screen is the bottom screen only, with origin (0,0)
+    at its top-left, going right (+x → 255) and down (+y → 191).
+
+    Labels reflect the touchable region:
+    - `bottom`: rulers map directly to touch coords (px 0..255 / 0..191, % 0-100).
+    - `top`:    rulers show top-screen pixel coords in grey; no percent. The
+                top screen is not touchable.
+    - `both`:   x-axis is shared (touch x). y-axis is touch-relative for the
+                bottom half (image y 192..383 → touch y 0..191); the top half
+                shows tick marks only, with a "TOP — not touchable" caption.
+                A red line marks the screen boundary at image y=192.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    LEFT = 56
+    BOTTOM = 40
+    STEP = 32
+    BLACK = (0, 0, 0)
+    GREY = (110, 110, 110)
+    BOUNDARY = (220, 50, 50)
+
+    iw, ih = img.size
+    canvas = Image.new("RGB", (iw + LEFT, ih + BOTTOM), (255, 255, 255))
+    canvas.paste(img, (LEFT, 0))
+    draw = ImageDraw.Draw(canvas)
+
+    try:
+        font = ImageFont.load_default(size=10)
+    except TypeError:  # older Pillow
+        font = ImageFont.load_default()
+
+    def text_w(s):
+        try:
+            return draw.textlength(s, font=font)
+        except AttributeError:
+            return len(s) * 6
+
+    # Bottom axis (x). Same dimension for all screens (256 wide); for `bottom`
+    # and `both` this is touch x. For `top`, it's just top-screen-x in grey.
+    x_is_touch = screen in ("bottom", "both")
+    px_color = BLACK if x_is_touch else GREY
+    for x in range(0, iw, STEP):
+        xc = LEFT + x
+        draw.line([(xc, ih), (xc, ih + 4)], fill=BLACK, width=1)
+        px_t = str(x)
+        draw.text((xc - text_w(px_t) / 2, ih + 6), px_t, fill=px_color, font=font)
+        if x_is_touch:
+            pct = round(x / (SCREEN_WIDTH - 1) * 100)
+            pct_t = f"{pct}%"
+            draw.text((xc - text_w(pct_t) / 2, ih + 22), pct_t, fill=GREY, font=font)
+
+    # Left axis (y). Labelling depends on which region of the image is touchable.
+    # We iterate over image-y, but show touch_y for the touchable portion.
+    if screen == "bottom":
+        # Image y == touch y directly.
+        y_ticks = list(range(0, ih, STEP)) + [ih - 1]
+        for y in y_ticks:
+            yc = y
+            draw.line([(LEFT - 4, yc), (LEFT, yc)], fill=BLACK, width=1)
+            pct = round(y / (SCREEN_HEIGHT - 1) * 100)
+            y_text = yc - 5 if y < ih - 1 else yc - 10
+            draw.text((4, y_text), str(y), fill=BLACK, font=font)
+            draw.text((28, y_text), f"{pct}%", fill=GREY, font=font)
+    elif screen == "top":
+        # Top screen is not touchable; show pixel-only labels in grey.
+        y_ticks = list(range(0, ih, STEP)) + [ih - 1]
+        for y in y_ticks:
+            yc = y
+            draw.line([(LEFT - 4, yc), (LEFT, yc)], fill=BLACK, width=1)
+            y_text = yc - 5 if y < ih - 1 else yc - 10
+            draw.text((4, y_text), str(y), fill=GREY, font=font)
+    elif screen == "both":
+        # Top half (image y < SCREEN_HEIGHT): tick marks only (not touchable).
+        # Bottom half (image y >= SCREEN_HEIGHT): labels show touch_y = y - 192.
+        # Include image y == SCREEN_HEIGHT (touch_y=0) and image y == ih-1 (touch_y=191).
+        for y in range(0, SCREEN_HEIGHT, STEP):
+            yc = y
+            draw.line([(LEFT - 4, yc), (LEFT, yc)], fill=GREY, width=1)
+        y_bottom_ticks = list(range(SCREEN_HEIGHT, ih, STEP)) + [ih - 1]
+        for y in y_bottom_ticks:
+            yc = y
+            draw.line([(LEFT - 4, yc), (LEFT, yc)], fill=BLACK, width=1)
+            touch_y = y - SCREEN_HEIGHT
+            pct = round(touch_y / (SCREEN_HEIGHT - 1) * 100)
+            y_text = yc - 5 if y < ih - 1 else yc - 10
+            draw.text((4, y_text), str(touch_y), fill=BLACK, font=font)
+            draw.text((28, y_text), f"{pct}%", fill=GREY, font=font)
+        # Red boundary line at image y=192 (top of touch screen).
+        draw.line([(LEFT, SCREEN_HEIGHT), (LEFT + iw - 1, SCREEN_HEIGHT)],
+                  fill=BOUNDARY, width=1)
+        # Caption in the empty top-left corner: "top: no touch" sideways.
+        draw.text((4, 2), "TOP", fill=GREY, font=font)
+        draw.text((4, 14), "(no", fill=GREY, font=font)
+        draw.text((4, 26), "touch)", fill=GREY, font=font)
+
+    return canvas
+
+
 class Daemon:
     def __init__(self, socket_path: str):
         self.socket_path = socket_path
@@ -290,6 +391,7 @@ class Daemon:
         self._require_rom()
         path = args["path"]
         screen = args.get("screen", "both").lower()
+        overlay = bool(args.get("overlay", False))
         img = self.emu.screenshot()  # PIL.Image 256x384 RGB
         if screen == "top":
             img = img.crop((0, 0, SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -297,10 +399,12 @@ class Daemon:
             img = img.crop((0, SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT_BOTH))
         elif screen != "both":
             raise ValueError(f"screen must be top|bottom|both, got {screen!r}")
+        if overlay:
+            img = _add_ruler_overlay(img, screen)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         img.save(path, "PNG")
         return {"path": os.path.abspath(path), "w": img.width, "h": img.height,
-                "screen": screen, "frame": self.frame_count}
+                "screen": screen, "overlay": overlay, "frame": self.frame_count}
 
     async def _press(self, args):
         self.emu.input.keypad_add_key(resolve_key(args["key"]))
@@ -319,11 +423,18 @@ class Daemon:
         return {"keypad": mask}
 
     async def _touch(self, args):
-        x_norm = clamp01(args["x"])
-        y_norm = clamp01(args["y"])
         # Touch screen is the bottom DS screen: 256x192 pixels.
-        px = round(x_norm * (SCREEN_WIDTH - 1))
-        py = round(y_norm * (SCREEN_HEIGHT - 1))
+        mode = str(args.get("mode", "norm")).lower()
+        if mode == "pixels":
+            px = max(0, min(SCREEN_WIDTH - 1, int(args["x"])))
+            py = max(0, min(SCREEN_HEIGHT - 1, int(args["y"])))
+        elif mode == "norm":
+            x_norm = clamp01(args["x"])
+            y_norm = clamp01(args["y"])
+            px = round(x_norm * (SCREEN_WIDTH - 1))
+            py = round(y_norm * (SCREEN_HEIGHT - 1))
+        else:
+            raise ValueError(f"touch mode must be 'norm' or 'pixels', got {mode!r}")
         self.emu.input.touch_set_pos(px, py)
         return {"pixel": {"x": px, "y": py}}
 

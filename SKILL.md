@@ -1,6 +1,6 @@
 ---
 name: agent-desmume
-description: Drive a headless Nintendo DS emulator (DeSmuME) from the shell — boot ROMs, step frames, screenshot, press buttons, touch the screen at normalized 0-1 coordinates, save/load states, read/poke main RAM, read NUL-terminated strings with arbitrary codecs, inspect/write CPU registers, set code breakpoints and memory watchpoints (step halts early on hit), import/export battery saves, record/play TAS movies, toggle individual GPU layers. Use when testing or validating NDS ROMs (especially fan translations) without the GUI emulator. The tool is `agent-desmume`; an auto-spawned daemon persists emulator state across invocations.
+description: Drive a headless Nintendo DS emulator (DeSmuME) from the shell — boot ROMs, step frames, screenshot (with optional touch-coord ruler overlay), press buttons, touch the bottom screen at normalized 0-1 coords or integer pixel coords, save/load states, read/poke main RAM, read NUL-terminated strings with arbitrary codecs, inspect/write CPU registers, set code breakpoints and memory watchpoints (step halts early on hit), import/export battery saves, record/play TAS movies, toggle individual GPU layers. Use when testing or validating NDS ROMs (especially fan translations) without the GUI emulator. The tool is `agent-desmume`; an auto-spawned daemon persists emulator state across invocations.
 ---
 
 # agent-desmume — headless Nintendo DS emulator control
@@ -50,8 +50,10 @@ agent-desmume step 180                     # advance ~3 seconds of frames
 agent-desmume screenshot shot.png          # PNG of both screens stacked (256x384)
 agent-desmume screenshot top.png  --screen top      # top only  (256x192)
 agent-desmume screenshot bot.png  --screen bottom   # bottom (touchable) only
+agent-desmume screenshot shot.png --overlay         # add touch-coord rulers (see below)
 agent-desmume tap START                    # press + step a few frames + release
-agent-desmume touch 0.5 0.7                # touch bottom screen at (50%, 70%)
+agent-desmume touch 0.5 0.7                # touch bottom screen at normalized (50%, 70%)
+agent-desmume touch 128 96 --pixels        # … or by integer pixel (0..255 x 0..191)
 agent-desmume untouch
 agent-desmume stop                         # shut down the daemon
 ```
@@ -80,15 +82,18 @@ All verbs accept `--session NAME` (default `default`, overridable via `$AGENT_DE
 - `agent-desmume step [N]` — cycle N frames (default 1). Each frame is ~16.7 ms of in-game time. Stepping is deterministic.
 
 ### Capture
-- `agent-desmume screenshot PATH [--screen top|bottom|both]` — write PNG.
+- `agent-desmume screenshot PATH [--screen top|bottom|both] [--overlay]` — write PNG.
   - `both` = 256×384, top above bottom (default).
   - `top` = 256×192. `bottom` = 256×192 (this is the touch screen).
+  - `--overlay` pads the PNG with a **bottom + left ruler** labelled in **touch-screen coords** (pixels + percent). For `--screen bottom`, the ruler maps 1:1 to the args you'd pass to `touch`. For `--screen both`, the y-axis labels only the touch (bottom) half of the image — image y=192 is touch y=0 — and a red line marks the screen boundary; the top half is labelled "TOP (no touch)". For `--screen top`, labels are pixel-only in grey since the top screen isn't touchable. Use this when you need an LLM to look at a screenshot and decide where to `touch`.
 
 ### Input
 - `agent-desmume press KEY` / `agent-desmume release KEY` — press/release one button.
 - `agent-desmume tap KEY [--frames N]` — press, step N frames (default 2), release, step 1 more frame. Use for menu navigation.
 - `agent-desmume keys [KEY ...]` — replace the entire pressed-key set (everything not listed is released).
-- `agent-desmume touch X Y` — touch the bottom screen at normalized coords (0.0–1.0 on each axis). `0.5 0.5` is dead center.
+- `agent-desmume touch X Y [--pixels]` — touch the **bottom (touch) screen**. The top screen is never touchable. Origin (0,0) is the **top-left of the bottom screen**, +x goes right, +y goes down.
+  - Default: normalized coords, `0.0`–`1.0` on each axis. `0.5 0.5` is dead center.
+  - `--pixels`: integer pixel coords clamped to `0..255` (x) and `0..191` (y). Mirrors what `--overlay` rulers show.
 - `agent-desmume untouch` — release the stylus.
 
 **Valid KEY values** (case-insensitive, `KEY_` prefix optional): `A B X Y L R START SELECT UP DOWN LEFT RIGHT LID`.
@@ -199,6 +204,19 @@ For fan translations, scan **main RAM** (`0x02000000`–`0x023FFFFF`) for the te
 agent-desmume boot game.nds
 agent-desmume step 600           # ~10s; long enough for most splashes
 agent-desmume screenshot title.png
+```
+
+### "Tap a UI element you can only see in a screenshot"
+```bash
+agent-desmume screenshot menu.png --screen bottom --overlay
+# Open menu.png. The left/bottom rulers are touch coords. Read off the pixel
+# coords of whatever you want to tap (e.g. an "OK" button at ~x=210, y=170).
+agent-desmume touch 210 170 --pixels
+agent-desmume step 5
+agent-desmume untouch
+agent-desmume step 30
+agent-desmume screenshot after.png --screen bottom --overlay
+# Cross-check the response — if you missed, the rulers tell you by how much.
 ```
 
 ### "Navigate a menu"

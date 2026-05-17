@@ -146,7 +146,6 @@ def cmd_step(session, ns):       return send(session, "step", {"n": ns.n})
 def cmd_press(session, ns):      return send(session, "press", {"key": ns.key})
 def cmd_release(session, ns):    return send(session, "release", {"key": ns.key})
 def cmd_keys(session, ns):       return send(session, "keys", {"pressed": ns.keys})
-def cmd_touch(session, ns):      return send(session, "touch", {"x": ns.x, "y": ns.y})
 def cmd_untouch(session, ns):    return send(session, "touch_release", {})
 def cmd_mic(session, ns):        return send(session, "mic_blow", {"on": ns.state == "on"})
 def cmd_ping(session, ns):       return send(session, "ping", {})
@@ -156,7 +155,15 @@ def cmd_status(session, ns):     return send(session, "is_running", {})
 
 def cmd_screenshot(session, ns):
     return send(session, "screenshot", {"path": os.path.abspath(ns.path),
-                                        "screen": ns.screen})
+                                        "screen": ns.screen,
+                                        "overlay": ns.overlay})
+
+
+def cmd_touch(session, ns):
+    args = {"x": ns.x, "y": ns.y}
+    if ns.pixels:
+        args["mode"] = "pixels"
+    return send(session, "touch", args)
 
 
 def cmd_tap(session, ns):
@@ -313,6 +320,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("screenshot")
     s.add_argument("path")
     s.add_argument("--screen", choices=["top", "bottom", "both"], default="both")
+    s.add_argument("--overlay", action="store_true",
+                   help="Pad image with bottom+left rulers (pixel + percent labels) "
+                        "to help locate touch coords. For --screen both, a red line "
+                        "marks the boundary at y=192 below which is the touch screen.")
     s.set_defaults(fn=cmd_screenshot)
 
     s = sub.add_parser("press"); s.add_argument("key"); s.set_defaults(fn=cmd_press)
@@ -324,7 +335,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--frames", type=int, default=2)
     s.set_defaults(fn=cmd_tap)
 
-    s = sub.add_parser("touch"); s.add_argument("x", type=float); s.add_argument("y", type=float); s.set_defaults(fn=cmd_touch)
+    s = sub.add_parser("touch",
+        help="Touch the bottom (touch) screen. Default: normalized 0.0-1.0 coords. "
+             "With --pixels: integer pixel coords clamped to (0..255, 0..191).")
+    s.add_argument("x", type=float)
+    s.add_argument("y", type=float)
+    s.add_argument("--pixels", action="store_true",
+                   help="Interpret x,y as integer pixel coords (clamped to 0..255, 0..191) "
+                        "instead of normalized 0.0-1.0.")
+    s.set_defaults(fn=cmd_touch)
     s = sub.add_parser("untouch"); s.set_defaults(fn=cmd_untouch)
 
     s = sub.add_parser("mic"); s.add_argument("state", choices=["on", "off"]); s.set_defaults(fn=cmd_mic)

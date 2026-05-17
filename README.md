@@ -36,8 +36,10 @@ ln -s "$(pwd)/SKILL.md" ~/.claude/skills/agent-desmume/SKILL.md
 agent-desmume boot /path/to/game.nds
 agent-desmume step 600                  # advance ~10 seconds
 agent-desmume screenshot title.png      # both screens, 256×384 PNG
+agent-desmume screenshot title.png --overlay   # … with bottom+left touch-coord rulers
 agent-desmume tap START                 # press + step + release
 agent-desmume touch 0.5 0.7             # touch the bottom screen at 50%, 70%
+agent-desmume touch 128 96 --pixels     # … or by integer pixel (clamped to 0..255, 0..191)
 agent-desmume state save 1              # checkpoint into slot 1
 agent-desmume read-string 0x021A8C40 --codec shift_jis
 agent-desmume stop
@@ -50,8 +52,8 @@ See [`SKILL.md`](SKILL.md) for the complete verb reference, NDS memory map, comm
 ## What it can do
 
 - Frame-perfect stepping (deterministic; no realtime).
-- Top / bottom / both-screen PNG screenshots.
-- Buttons, touch (normalized 0–1 coords), lid open/close.
+- Top / bottom / both-screen PNG screenshots, optional touch-coord ruler overlay (`--overlay`).
+- Buttons, touch (normalized 0–1 or integer pixel coords with `--pixels`), lid open/close.
 - Savestate slots and file-backed savestates.
 - Battery save (.sav/.dsv/.duc/.dss) import and export — auto-discovered next to the ROM if named `<rom-basename>.dsv`.
 - Read / write any DS memory address; read NUL-terminated strings with arbitrary codecs.
