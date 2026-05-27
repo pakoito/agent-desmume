@@ -20,12 +20,24 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-Put the binaries on `$PATH` (typically `~/.local/bin` is already there):
+Put the daemon on `$PATH` (typically `~/.local/bin` is already there):
 
 ```bash
-ln -s "$(pwd)/.venv/bin/agent-desmume"        ~/.local/bin/agent-desmume
 ln -s "$(pwd)/.venv/bin/agent-desmume-daemon" ~/.local/bin/agent-desmume-daemon
 ```
+
+### CLI: build the Rust client
+
+The CLI is a thin client over the daemon's Unix-socket JSON protocol. The Python entry point (`.venv/bin/agent-desmume`) works but costs ~450 ms per invocation on Python startup + argparse — painful for agents that fire dozens of verbs. The Rust client at `cli-rs/` does the same job in 2–3 ms warm (~50× faster):
+
+```bash
+cargo build --release --manifest-path cli-rs/Cargo.toml
+ln -s "$(pwd)/cli-rs/target/release/agent-desmume" ~/.local/bin/agent-desmume
+```
+
+The Rust binary speaks the exact same wire protocol and verb surface as the Python CLI, and auto-spawns `agent-desmume-daemon` from `$PATH` just like the Python one does. Set `AGENT_DESMUME_DAEMON_CMD` to override the daemon command if you need to (e.g. a custom wrapper).
+
+If you'd rather stay all-Python, just symlink `.venv/bin/agent-desmume` into `~/.local/bin/` instead.
 
 Register the skill with Claude Code (optional, lets agents discover the tool automatically):
 

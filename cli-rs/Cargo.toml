@@ -1,0 +1,24 @@
+[package]
+name = "agent-desmume"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Headless DeSmuME CLI client — thin Rust wrapper over the Python daemon's Unix-socket JSON protocol"
+publish = false
+
+[[bin]]
+name = "agent-desmume"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+libc = "0.2"
+shell-words = "1"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

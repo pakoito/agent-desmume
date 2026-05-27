@@ -32,12 +32,21 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-The two binaries land in `.venv/bin/`. Put them on PATH once:
+Two binaries land in `.venv/bin/` (`agent-desmume`, `agent-desmume-daemon`). The CLI client is also available as a much faster Rust binary at `cli-rs/`. Recommended layout:
 
 ```bash
-ln -s "$(pwd)/.venv/bin/agent-desmume"        ~/.local/bin/agent-desmume
+# Daemon (Python) on PATH:
 ln -s "$(pwd)/.venv/bin/agent-desmume-daemon" ~/.local/bin/agent-desmume-daemon
+
+# CLI client — pick one:
+#   (a) Rust build, ~2–3 ms warm per call (~50× faster than the Python CLI):
+cargo build --release --manifest-path cli-rs/Cargo.toml
+ln -s "$(pwd)/cli-rs/target/release/agent-desmume" ~/.local/bin/agent-desmume
+#   (b) Python fallback, ~125–450 ms per call:
+# ln -s "$(pwd)/.venv/bin/agent-desmume" ~/.local/bin/agent-desmume
 ```
+
+Both clients speak the same Unix-socket JSON protocol; pick one symlink. The daemon stays Python in either case.
 
 Optional: register the agent skill with Claude Code so agents discover it automatically.
 ```bash
@@ -64,6 +73,25 @@ agent-desmume stop                         # shut down the daemon
 ```
 
 Add `--json` to any command to get the machine-readable response.
+
+## Sequences: prefer `batch`
+
+For anything that fires 2+ verbs in a row (menu navigation, "press → wait → screenshot", state-restore-then-poke), use `agent-desmume batch -` and feed the steps as one JSON payload on stdin. The daemon executes them under a single lock, returns one response with per-step results, and you pay just one socket round trip.
+
+```bash
+agent-desmume batch - <<'EOF'
+[
+  {"verb": "state_load",  "args": {"slot": 1}},
+  {"verb": "press",       "args": {"key": "A"}},
+  {"verb": "step",        "args": {"n": 4}},
+  {"verb": "release",     "args": {"key": "A"}},
+  {"verb": "step",        "args": {"n": 60}},
+  {"verb": "screenshot",  "args": {"path": "/tmp/after.png", "screen": "bottom"}}
+]
+EOF
+```
+
+The same six verbs as six individual CLI calls take 6× the per-call startup. Even with the fast Rust CLI (~3 ms warm), batch is still the right pattern for sequences — one acquired lock, atomic ordering, deterministic timing between steps. Full batch syntax is documented under [Batch](#batch) below.
 
 ## Verbs (full reference)
 

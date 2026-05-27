@@ -9,6 +9,7 @@ build/
 dist/
 *.pyc
 __pycache__/
+cli-rs/target/
 
 # Test outputs
 /tmp/agent-desmume-test/
