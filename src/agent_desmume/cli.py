@@ -300,7 +300,10 @@ def cmd_stop(session, ns):
 # ── argparse plumbing ────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="agent-desmume")
+    p = argparse.ArgumentParser(
+        prog="agent-desmume",
+        description="Headless DeSmuME daemon client [Python]",
+    )
     p.add_argument("--session", default=os.environ.get("AGENT_DESMUME_SESSION", "default"))
     p.add_argument("--json", action="store_true", help="Emit raw JSON response")
     sub = p.add_subparsers(dest="cmd", required=True)

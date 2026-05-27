@@ -8,7 +8,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "agent-desmume", version, about = "Headless DeSmuME daemon client")]
+#[command(
+    name = "agent-desmume",
+    version,
+    about = "Headless DeSmuME daemon client [Rust]"
+)]
 pub struct Cli {
     /// Session name (state-dir bucket). Default "default".
     #[arg(long, env = "AGENT_DESMUME_SESSION", default_value = "default", global = true)]
