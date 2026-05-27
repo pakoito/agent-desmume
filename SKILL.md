@@ -150,7 +150,7 @@ agent-desmume --json read-string 0x02000100 --codec shift_jis
 - `agent-desmume regs read [arm9|arm7]` — dump all 16 GP regs (r0–r15) plus `sp` (r13), `lr` (r14), `pc` (r15) aliases. Defaults to ARM9.
 - `agent-desmume regs write arm9|arm7 r0=42 pc=0x022f8818 …` — set one or more registers. Hex (`0x…`) and decimal values both accepted.
 
-Caveat: `pc =` (jump-to) is a no-op when DeSmuME's JIT is enabled. JIT is on by default; there is no daemon flag for this yet. Reading PC always works.
+Caveat: `pc =` (jump-to) does not redirect execution. Writing `r15` lands in the register file, but the ARM core has already prefetched `next_instruction`, so the next step runs the old instruction anyway. Redirecting would require also calling `desmume_memory_set_next_instruction`, which py-desmume's r15 setter doesn't do. Reading PC always works. (DeSmuME's JIT is off — `CommonSettings.use_jit` defaults to `false` and the daemon doesn't enable it — so JIT isn't the cause.)
 
 ### Breakpoints and watchpoints
 
@@ -382,7 +382,7 @@ agent-desmume --session b step 600; agent-desmume --session b screenshot b.png
 
 - **Microphone**: not exposed. Mic-required scenes ("blow into the mic" puzzles) cannot be passed. Adding it would mean a fourth patch in [`pakoito/desmume`](https://github.com/pakoito/desmume/tree/0.9.13-agent-desmume) exposing `desmume_input_mic_*` symbols, plus matching ctypes glue in the py-desmume fork.
 - **Real-time / 60fps playback**: not built in. Each `step` is synchronous frame stepping — fine for agent control, not for a human watching. Build a separate viewer if you need that.
-- **Jump-to-PC** (`regs write … pc=0x…`): writing PC is a no-op when DeSmuME's JIT is enabled. JIT is on by default; there is no daemon flag to disable it yet. Reading PC always works.
+- **Jump-to-PC** (`regs write … pc=0x…`): writing PC does not redirect execution. The value lands in `r15`, but ARM's prefetched `next_instruction` runs on the next step regardless. py-desmume's r15 setter calls `desmume_memory_write_register` only; redirecting would also need `desmume_memory_set_next_instruction`, which isn't bound. Reading PC always works. (Not a JIT issue — `CommonSettings.use_jit` defaults to `false` and the daemon leaves it that way.)
 - **Hit cap**: breakpoint/watchpoint hits are capped at 32 records per drain to keep responses small in tight loops; the `hit_cap_reached` flag tells you when extras were dropped.
 - **`backup export`** silently returns `exported: false` if the game hasn't yet initialized save data (you need to play through at least one save point first).
 - **DeSmuME version coupling**: savestates (`.dst`) are pinned to the exact minor version that wrote them. The daemon targets 0.9.13 — saves from 0.9.12 or future 0.9.14 will fail with a `RichError` whose `inspection.creator_desmume` reveals the mismatch.

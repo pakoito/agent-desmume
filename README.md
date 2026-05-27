@@ -83,7 +83,7 @@ See [`SKILL.md`](SKILL.md) for the complete verb reference, NDS memory map, comm
 
 - **Microphone input.** Mic-required scenes can't be passed. The underlying `libdesmume.so` C ABI doesn't export the mic functions; adding them would require a patch to `py-desmume`'s vendored DeSmuME and a wheel rebuild.
 - **Realtime playback.** Each call to `step` is synchronous frame stepping — fine for agents and CI, not for humans watching live.
-- **Jump-to-PC.** Writing the PC register is a no-op while DeSmuME's JIT is on (it is, by default).
+- **Jump-to-PC.** Writing the PC register does not redirect execution — the value lands in `r15` but ARM's prefetched `next_instruction` runs on the next step. Would need py-desmume to also expose `desmume_memory_set_next_instruction`.
 
 See `SKILL.md` for the full list.
 
