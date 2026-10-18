@@ -643,6 +643,35 @@ class Daemon:
     # in-memory hit queue so we don't OOM and so JSON responses stay small.
     HIT_CAP = 32
 
+    # CPSR bit 5: set while the core runs THUMB code.
+    CPSR_T = 1 << 5
+
+    def _cpu_context(self, cpu: str) -> dict:
+        # Read inside a hook, this is the state of the instruction that fired
+        # it. By the time `step` returns, the frame has run to completion and
+        # `regs read` only shows where the CPU idled at the frame boundary.
+        bank = self._reg_bank(cpu)
+        regs = {name: int(getattr(bank, name)) & 0xFFFFFFFF for name in REG_NAMES}
+        cpsr = int(bank.cpsr) & 0xFFFFFFFF
+        thumb = bool(cpsr & self.CPSR_T)
+        # While an instruction executes, DeSmuME keeps R15 at its address + 8
+        # (ARM) or + 4 (THUMB), as the ARM pipeline exposes it (armcpu_prefetch).
+        pc = (regs["r15"] - (4 if thumb else 8)) & 0xFFFFFFFF
+        return {"cpu": cpu, "pc": pc, "thumb": thumb,
+                "lr": regs["r14"], "sp": regs["r13"],
+                "regs": {**regs, "cpsr": cpsr}}
+
+    def _hit_context(self, kind: str, hit_addr: int) -> dict:
+        # Hooks don't say which CPU fired them. Game code runs on the ARM9, so
+        # report it; an exec hit whose address is the ARM7's instruction instead
+        # is attributed to the ARM7.
+        ctx = self._cpu_context("arm9")
+        if kind == "exec" and ctx["pc"] != hit_addr:
+            arm7 = self._cpu_context("arm7")
+            if arm7["pc"] == hit_addr:
+                return arm7
+        return ctx
+
     def _make_callback(self, kind: str, addr: int):
         from ctypes import CFUNCTYPE, c_uint, c_int
 
@@ -653,13 +682,19 @@ class Daemon:
         def trampoline(hit_addr, hit_size):
             if len(self._hits) >= self.HIT_CAP:
                 return 1
-            self._hits.append({
+            hit = {
                 "kind": kind,
                 "watch_addr": addr,
                 "hit_addr": int(hit_addr),
                 "size": int(hit_size),
                 "frame": self.frame_count,
-            })
+            }
+            # An exception must not escape into libdesmume's frame loop.
+            try:
+                hit.update(self._hit_context(kind, int(hit_addr)))
+            except Exception as e:
+                hit["context_error"] = str(e)
+            self._hits.append(hit)
             return 1
         return CB_T(trampoline)
 

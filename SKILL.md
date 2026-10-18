@@ -168,18 +168,30 @@ The emulator core fires hooks **synchronously** during a frame; the daemon catch
 
 - `agent-desmume hits [--peek]` — drain (or peek) pending hits without stepping. Useful if you want to inspect what fired during the last step without re-stepping.
 
-Each hit record: `{kind: "exec"|"read"|"write", watch_addr: <the addr you registered>, hit_addr: <the actual access addr>, size: N, frame: F}`. `hit_addr` may differ from `watch_addr` when `size > 1`.
+Each hit record: `{kind: "exec"|"read"|"write", watch_addr: <the addr you registered>, hit_addr: <the actual access addr>, size: N, frame: F, cpu: "arm9"|"arm7", pc: <instruction addr>, thumb: bool, lr: L, sp: S, regs: {r0..r15, cpsr}}`. `hit_addr` may differ from `watch_addr` when `size > 1`.
+
+The CPU fields are captured **inside the hook**, while the instruction that fired it is executing:
+- `pc` is the address of that instruction: the code that did the read/write, or the breakpoint address itself for `exec`. `lr` is usually the caller's return address.
+- `regs` holds the registers at that moment. `regs.r15` is the raw pipeline value (`pc + 8` in ARM, `pc + 4` in THUMB); use `pc`.
+- For a `write`, the store has already landed, so a `read-mem` of `hit_addr` after the step shows the value it wrote, unless later code in the same frame overwrote it.
+- Hooks don't report which CPU fired them. Hits are attributed to the ARM9, which runs game code. The exception is an `exec` hit at the ARM7's current instruction, which reports `cpu: "arm7"`. A `read`/`write` performed by the ARM7 (e.g. IPC or sound buffers in main RAM) is still reported with ARM9 registers.
+- Hits past the 32-entry cap are dropped without capturing registers.
+
+**Don't use `regs read` after a halt to find the writer.** `step` only checks for hits at frame boundaries, so by the time it returns the frame has run to completion. `regs read` then shows wherever the CPU idled (often an ITCM wait loop at `0x01FF8xxx`), not the instruction that fired the hook.
+
+Hooks match the **exact address the CPU uses**, with no mirror folding. Main RAM is mirrored every 4 MB (e.g. `0x0219B2BC` == `0x0259B2BC` == `0x027FFxxx`-style aliases for the top of RAM). A watch on one alias does not fire when the game accesses another, so watch the address the code actually uses (NitroSDK's shared area, for instance, is normally accessed at `0x027FFxxx`, not `0x023FFxxx`).
 
 Disable early-halt for a single step (run all N frames regardless of hits): pass `--json` and post a custom batch, or… (currently always halts on hit; if you need a no-halt mode tell me).
 
-Example — find where the game writes to a known flag byte:
+Example — find the code that writes a known RAM cell:
 ```bash
-agent-desmume watch add 0x021A0C40 --mode write
-agent-desmume step 600                    # runs until the write happens
-agent-desmume --json hits                 # see what fired
-agent-desmume --json regs read            # PC at that moment
+agent-desmume watch add 0x021A0C40 --mode write --size 4
+agent-desmume --json step 600             # halts after the frame with the write; hits are in this response
+# → "hits": [{"kind": "write", "hit_addr": ..., "pc": 34704472, "thumb": false, "lr": ..., "regs": {...}}]
+#   pc = the store instruction; disassemble around it to see which register held the base address
 agent-desmume watch clear-all
 ```
+(`step` drains the hit queue into its own response, so a separate `hits` call afterwards returns nothing. Read the hits from the `step` response, or from the `step` item's result when using `batch`.)
 
 ### State persistence
 - `agent-desmume state save SLOT` / `agent-desmume state load SLOT` — 10 numbered slots (0–9). Ephemeral, in-memory. Loading a slot that's never been written to fails with `inspection.exists: false`.

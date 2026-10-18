@@ -74,7 +74,7 @@ See [`SKILL.md`](SKILL.md) for the complete verb reference, NDS memory map, comm
 - Battery save (.sav/.dsv/.duc/.dss) import and export — auto-discovered next to the ROM if named `<rom-basename>.dsv`.
 - Read / write any DS memory address; read NUL-terminated strings with arbitrary codecs.
 - ARM9 + ARM7 register read/write.
-- Code breakpoints (`break add ADDR`) and memory watchpoints (`watch add ADDR --mode read|write`) with synchronous early-halt on hit.
+- Code breakpoints (`break add ADDR`) and memory watchpoints (`watch add ADDR --mode read|write`) with synchronous early-halt on hit. Each hit records the PC, THUMB flag and registers of the instruction that fired it.
 - DeSmuME movie record/play for reproducible test runs.
 - GPU layer toggle per screen, useful for isolating text in screenshots.
 - Multiple parallel sessions via `--session NAME`.
