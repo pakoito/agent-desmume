@@ -682,19 +682,14 @@ class Daemon:
         def trampoline(hit_addr, hit_size):
             if len(self._hits) >= self.HIT_CAP:
                 return 1
-            hit = {
+            self._hits.append({
                 "kind": kind,
                 "watch_addr": addr,
                 "hit_addr": int(hit_addr),
                 "size": int(hit_size),
                 "frame": self.frame_count,
-            }
-            # An exception must not escape into libdesmume's frame loop.
-            try:
-                hit.update(self._hit_context(kind, int(hit_addr)))
-            except Exception as e:
-                hit["context_error"] = str(e)
-            self._hits.append(hit)
+                **self._hit_context(kind, int(hit_addr)),
+            })
             return 1
         return CB_T(trampoline)
 
